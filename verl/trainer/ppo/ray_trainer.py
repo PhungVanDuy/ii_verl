@@ -510,14 +510,18 @@ class RayPPOTrainer(object):
                     actor_local_path = os.path.join(self.config.trainer.default_local_dir, 'actor',
                                                     f'global_step_{global_steps}')
                     actor_remote_path = os.path.join(self.config.trainer.default_hdfs_dir, 'actor')
-                    self.actor_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path)
-
+                    try:
+                        self.actor_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path)
+                    except:
+                        pass
                     if self.use_critic:
                         critic_local_path = os.path.join(self.config.trainer.default_local_dir, 'critic',
                                                          f'global_step_{global_steps}')
                         critic_remote_path = os.path.join(self.config.trainer.default_hdfs_dir, 'critic')
-                        self.critic_wg.save_checkpoint(critic_local_path, critic_remote_path)
-
+                        try:
+                            self.critic_wg.save_checkpoint(critic_local_path, critic_remote_path)
+                        except:
+                            pass
                 global_steps += 1
 
         # perform validation after training
