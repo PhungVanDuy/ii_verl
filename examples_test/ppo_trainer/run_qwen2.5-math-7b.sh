@@ -5,8 +5,9 @@ math_test_path=/workspace/ii_verl/examples_test/ppo_trainer/master_test_v2.parqu
 
 train_files="['$math_train_path']"
 test_files="['$math_test_path']"
-
-python3 -m verl.trainer.main_ppo \
+export VLLM_ATTENTION_BACKEND=XFORMERS
+export WANDB_ENTITY=pvduy
+VLLM_ATTENTION_BACKEND=XFORMERS WANDB_ENTITY=pvduy python3 -m verl.trainer.main_ppo \
     data.train_files="$train_files" \
     data.val_files="$test_files" \
     data.train_batch_size=512\
