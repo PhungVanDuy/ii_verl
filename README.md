@@ -27,8 +27,8 @@ veRL is fast with:
 
 ## News
 
-- [2024/12] The team will present <a href="https://neurips.cc/Expo/Conferences/2024/workshop/100677">Post-training LLMs: From Algorithms to Infrastructure</a> at NeurIPS 2024.
-  - [Slides](https://github.com/eric-haibin-lin/verl-data/tree/neurips), notebooks, and video be available soon
+- [2024/12] The team presented <a href="https://neurips.cc/Expo/Conferences/2024/workshop/100677">Post-training LLMs: From Algorithms to Infrastructure</a> at NeurIPS 2024.
+  - [Slides](https://github.com/eric-haibin-lin/verl-data/tree/neurips), [notebooks](https://lightning.ai/eric-haibin-lin/studios/verl-neurips~01je0d1benfjb9grmfjxqahvkn?view=public&section=featured), and [video](https://neurips.cc/Expo/Conferences/2024/workshop/100677) available.
 - [2024/08] HybridFlow (verl) is accepted to EuroSys 2025.
 
 ## Installation Guide
@@ -172,7 +172,12 @@ Visit our [documentation](https://verl.readthedocs.io/en/latest/index.html) to l
   - [Add models to Megatron-LM backend](https://verl.readthedocs.io/en/latest/advance/megatron_extension.html)
 
 
-## Contribution
+## Community and Contribution
+
+### Communication channel
+
+[Join us](https://join.slack.com/t/verlgroup/shared_invite/zt-2w5p9o4c3-yy0x2Q56s_VlGLsJ93A6vA) for discussions on slack!
+
 ### Code formatting
 We use yapf (Google style) to enforce strict code formatting when reviewing MRs. To reformat you code locally, make sure you installed `yapf`
 ```bash
@@ -180,7 +185,7 @@ pip3 install yapf
 ```
 Then, make sure you are at top level of verl repo and run
 ```bash
-yapf -ir -vv --style ./.style.yapf verl single_controller examples
+yapf -ir -vv --style ./.style.yapf verl examples
 ```
 
 
