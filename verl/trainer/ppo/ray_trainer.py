@@ -436,12 +436,7 @@ class RayPPOTrainer(object):
 
                 # generate a batch
                 with Timer(name='gen', logger=None) as timer:
-                    try:
-                        gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
-                    except:
-                        import pickle
-                        pickle.dump(open(gen_batch, open("debug_gen_batch.pickle")))
-                        import ipdb; ipdb.set_trace()
+                    gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
                 metrics['timing/gen'] = timer.last
 
                 batch = batch.union(gen_batch_output)
