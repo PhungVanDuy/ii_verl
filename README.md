@@ -21,7 +21,8 @@ veRL is fast with:
 
 
 <p align="center">
-| <a href="https://verl.readthedocs.io/en/latest/index.html"><b>Documentation</b></a> | <a href="https://arxiv.org/abs/2409.19256v2"><b>Paper</b></a> | <a href="https://join.slack.com/t/verlgroup/shared_invite/zt-2w5p9o4c3-yy0x2Q56s_VlGLsJ93A6vA"><b>Slack</b></a> | 
+| <a href="https://verl.readthedocs.io/en/latest/index.html"><b>Documentation</b></a> | <a href="https://arxiv.org/abs/2409.19256v2"><b>Paper</b></a> | <a href="https://join.slack.com/t/verlgroup/shared_invite/zt-2w5p9o4c3-yy0x2Q56s_VlGLsJ93A6vA"><b>Slack</b></a> | <a href="https://u.r.sn.cn/NWPFYJ"><b>Wechat</b></a> | 
+
 <!-- <a href=""><b>Slides</b></a> | -->
 </p>
 
@@ -71,7 +72,7 @@ git clone https://github.com/volcengine/verl && cd verl && pip3 install -e .
 # or install from pypi via `pip3 install verl`
 ```
 
-4. Setup Megatron (optional)
+<details><summary> 4. Setup Megatron (optional) </summary>
 
 If you want to enable training with Megatron, Megatron code must be added to PYTHONPATH:
 
@@ -88,6 +89,7 @@ You can also get the Megatron code after verl's patch via
 ```bash
 git clone -b core_v0.4.0_verl https://github.com/eric-haibin-lin/Megatron-LM
 ```
+</details>
 
 #### 2. From Custom Environments
 
