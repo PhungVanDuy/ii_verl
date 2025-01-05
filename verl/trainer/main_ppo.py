@@ -41,6 +41,13 @@ def main_task(config, compute_score=None):
     from omegaconf import OmegaConf
     pprint(OmegaConf.to_container(config, resolve=True))  # resolve=True will eval symbol values
     OmegaConf.resolve(config)
+    
+    if config.trainer.get('hf_hub_model_id', None):
+        from huggingface_hub import HfApi
+        api = HfApi()
+        api.create_repo(config.trainer.hf_hub_model_id, exist_ok=True, private=True)
+        print(f'Created HuggingFace repo {config.trainer.hf_hub_model_id}')
+        
 
     # download the checkpoint from hdfs
     local_path = copy_local_path_from_hdfs(config.actor_rollout_ref.model.path)
@@ -100,7 +107,12 @@ def main_task(config, compute_score=None):
         mapping[Role.RewardModel] = global_pool_id
 
     reward_manager_name = config.reward_model.get("reward_manager", "naive")
-    if reward_manager_name == 'naive':
+    if config.reward_api.enable:
+        from verl.workers.reward_manager import RewardAPIManager
+        if not config.reward_api.api_url:
+            raise ValueError('api_url is required when enable reward_api')
+        reward_fn = RewardAPIManager(tokenizer=tokenizer, api_url=config.reward_api.api_url)
+    elif reward_manager_name == 'naive':
         from verl.workers.reward_manager import NaiveRewardManager
         reward_manager_cls = NaiveRewardManager
     elif reward_manager_name == 'prime':
