@@ -555,7 +555,7 @@ class ActorRolloutRefWorker(Worker):
         return output
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def save_checkpoint(self, local_path, hdfs_path=None, global_step=0, remove_previous_ckpt=False):
+    def save_checkpoint(self, local_path, hdfs_path=None, global_step=0, remove_previous_ckpt=False, hf_hub_model_id=None):
         # only support save and load ckpt for actor
         assert self._is_actor
         import torch
@@ -568,7 +568,18 @@ class ActorRolloutRefWorker(Worker):
                                                 hdfs_path=hdfs_path,
                                                 global_step=global_step,
                                                 remove_previous_ckpt=remove_previous_ckpt)
-
+        if self.rank == 0:
+            if hf_hub_model_id is not None:
+                try:
+                    from huggingface_hub import HfApi
+                    api = HfApi()
+                    api.upload_folder(
+                        folder_path=local_path,
+                        repo_id=hf_hub_model_id,
+                        commit_message=f"Update Actor model at global_step {global_step}"
+                    )
+                except Exception as e:
+                    print(f"Failed to push to hub: {e}")
         torch.distributed.barrier()
         if self._is_offload_param:
             offload_fsdp_param_and_grad(module=self.actor_module_fsdp, offload_grad=self._is_offload_grad)
@@ -834,7 +845,7 @@ class CriticWorker(Worker):
         return output
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def save_checkpoint(self, local_path, hdfs_path=None, global_step=0, remove_previous_ckpt=False):
+    def save_checkpoint(self, local_path, hdfs_path=None, global_step=0, remove_previous_ckpt=False, hf_hub_model_id=None):
         import torch
         if self._is_offload_param:
             load_fsdp_param_and_grad(module=self.critic_module,

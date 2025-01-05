@@ -462,7 +462,9 @@ class RayPPOTrainer(object):
     def _create_dataloader(self):
         from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
         # TODO: we have to make sure the batch size is divisible by the dp size
-        self.train_dataset = RLHFDataset(parquet_files=self.config.data.train_files,
+        from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
+        self.train_dataset = RLHFDataset(paths=self.config.data.train_files,
+                                         split=self.config.data.get('train_split', 'train'),
                                          tokenizer=self.tokenizer,
                                          prompt_key=self.config.data.prompt_key,
                                          max_prompt_length=self.config.data.max_prompt_length,
@@ -483,7 +485,8 @@ class RayPPOTrainer(object):
                                            collate_fn=collate_fn,
                                            sampler=sampler)
 
-        self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
+        self.val_dataset = RLHFDataset(paths=self.config.data.val_files,
+                                       split=self.config.data.get('val_split', 'test'),
                                        tokenizer=self.tokenizer,
                                        prompt_key=self.config.data.prompt_key,
                                        max_prompt_length=self.config.data.max_prompt_length,
@@ -965,15 +968,18 @@ class RayPPOTrainer(object):
 
                 self.global_steps += 1
 
-                if self.global_steps >= self.total_training_steps:
 
-                    # perform validation after training
-                    if self.val_reward_fn is not None:
-                        val_metrics = self._validate()
-                        pprint(f'Final validation metrics: {val_metrics}')
-                        logger.log(data=val_metrics, step=self.global_steps)
-                    if self.config.trainer.save_freq > 0 and \
-                            (self.global_steps - 1) % self.config.trainer.save_freq != 0:
-                        with _timer('save_checkpoint', timing_raw):
-                            self._save_checkpoint()
-                    return
+
+        # perform validation after training
+        if self.val_reward_fn is not None and self.config.trainer.get('val_after_train', True):
+            val_metrics = self._validate()
+            pprint(f'Final validation metrics: {val_metrics}')
+            logger.log(data=val_metrics, step=self.global_steps)
+
+        # Push only the actor model to HuggingFace Hub
+        actor_local_path = os.path.join(self.config.trainer.default_local_dir, 'actor', 'final')
+        self.actor_rollout_wg.save_checkpoint(actor_local_path, hf_hub_model_id=self.config.trainer.hf_hub_model_id)
+
+        if self.use_critic:
+            critic_local_path = os.path.join(self.config.trainer.default_local_dir, 'critic', 'final')
+            self.critic_wg.save_checkpoint(critic_local_path)
