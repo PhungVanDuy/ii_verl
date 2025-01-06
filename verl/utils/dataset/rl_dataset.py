@@ -107,7 +107,7 @@ class RLHFDataset(Dataset):
                 try:
                     ds = load_from_disk(path)
                 except FileNotFoundError:
-                    ds = load_dataset(path, split=self.split).select(range(100))
+                    ds = load_dataset(path, split=self.split)
                     
                 dataframe = ds.to_pandas()
                 
