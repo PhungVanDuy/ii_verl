@@ -27,6 +27,7 @@ import numpy as np
 from codetiming import Timer
 from omegaconf import OmegaConf, open_dict
 from verl import DataProto
+from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 from verl.single_controller.base import Worker
 from verl.single_controller.ray import RayResourcePool, RayWorkerGroup, RayClassWithInitArgs
 from verl.single_controller.ray.base import create_colocated_worker_cls
@@ -308,7 +309,7 @@ class RayPPOTrainer(object):
                                        return_raw_chat=self.config.data.get('return_raw_chat', False),
                                        truncation='error')
         self.val_dataloader = DataLoader(dataset=self.val_dataset,
-                                         batch_size=self.config.data.val_batch_size,
+                                         batch_size=len(self.val_dataset),
                                          shuffle=True,
                                          drop_last=True,
                                          collate_fn=collate_fn)
@@ -321,6 +322,12 @@ class RayPPOTrainer(object):
 
         # inject total_training_steps to actor/critic optim_config. This is hacky.
         total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+
+        if self.config.trainer.total_training_steps is not None:
+            total_training_steps = self.config.trainer.total_training_steps
+
+        self.total_training_steps = total_training_steps
+        print(f'Total training steps: {self.total_training_steps}')
 
         OmegaConf.set_struct(self.config, True)
         with open_dict(self.config):
@@ -335,7 +342,7 @@ class RayPPOTrainer(object):
             # test_batch = test_batch.to('cuda')
 
             # we only do validation on rule-based rm
-            if test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
+            if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
                 return {}
 
             test_gen_batch = test_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
@@ -347,7 +354,11 @@ class RayPPOTrainer(object):
                 'validate': True,
             }
 
-            test_output_gen_batch = self.actor_rollout_wg.generate_sequences(test_gen_batch)
+            # pad to be divisible by dp_size
+            test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
+            test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
+            # unpad
+            test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
             print('validation generation end')
 
             test_batch = test_batch.union(test_output_gen_batch)
@@ -460,14 +471,14 @@ class RayPPOTrainer(object):
                           default_backend=self.config.trainer.logger,
                           config=OmegaConf.to_container(self.config, resolve=True))
 
-        global_steps = 0
+        self.global_steps = 0
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
         if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
             val_metrics = self._validate()
             pprint(f'Initial validation metrics: {val_metrics}')
-            logger.log(data=val_metrics, step=global_steps)
+            logger.log(data=val_metrics, step=self.global_steps)
             if self.config.trainer.get('val_only', False):
                 return
 
@@ -534,7 +545,7 @@ class RayPPOTrainer(object):
                     metrics.update(critic_output_metrics)
 
                 # implement critic warmup
-                if self.config.trainer.critic_warmup <= global_steps:
+                if self.config.trainer.critic_warmup <= self.global_steps:
                     # update actor
                     with _timer('update_actor', timing_raw):
                         actor_output = self.actor_rollout_wg.update_actor(batch)
@@ -542,7 +553,7 @@ class RayPPOTrainer(object):
                     metrics.update(actor_output_metrics)
 
                 # validate
-                if self.val_reward_fn is not None and (global_steps + 1) % self.config.trainer.test_freq == 0:
+                if self.val_reward_fn is not None and (self.global_steps + 1) % self.config.trainer.test_freq == 0:
                     with _timer('testing', timing_raw):
                         val_metrics: dict = self._validate()
                         val_metrics = {f'val/{key}': val for key, val in val_metrics.items()}
@@ -553,26 +564,29 @@ class RayPPOTrainer(object):
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
 
                 # TODO: make a canonical logger that supports various backend
-                logger.log(data=metrics, step=global_steps)
+                logger.log(data=metrics, step=self.global_steps)
 
-                if self.config.trainer.save_freq > 0 and (global_steps + 1) % self.config.trainer.save_freq == 0:
+                if self.config.trainer.save_freq > 0 and (self.global_steps + 1) % self.config.trainer.save_freq == 0:
                     actor_local_path = os.path.join(self.config.trainer.default_local_dir, 'actor',
-                                                    f'global_step_{global_steps}')
+                                                    f'global_step_{self.global_steps}')
                     actor_remote_path = None if self.config.trainer.default_hdfs_dir is None else os.path.join(
                         self.config.trainer.default_hdfs_dir, 'actor')
                     self.actor_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path)
 
                     if self.use_critic:
                         critic_local_path = os.path.join(self.config.trainer.default_local_dir, 'critic',
-                                                         f'global_step_{global_steps}')
+                                                         f'global_step_{self.global_steps}')
                         critic_remote_path = None if self.config.trainer.default_hdfs_dir is None else os.path.join(
                             self.config.trainer.default_hdfs_dir, 'critic')
                         self.critic_wg.save_checkpoint(critic_local_path, critic_remote_path)
 
-                global_steps += 1
+                self.global_steps += 1
 
-        # perform validation after training
-        if self.val_reward_fn is not None:
-            val_metrics = self._validate()
-            pprint(f'Final validation metrics: {val_metrics}')
-            logger.log(data=val_metrics, step=global_steps)
+                if self.global_steps >= self.total_training_steps:
+
+                    # perform validation after training
+                    if self.val_reward_fn is not None:
+                        val_metrics = self._validate()
+                        pprint(f'Final validation metrics: {val_metrics}')
+                        logger.log(data=val_metrics, step=self.global_steps)
+                    return

@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensordict import TensorDict
-import ray
 
-from verl import DataProto
+def test_import():
+    import verl
+    print(verl.__version__)
 
 
-class DistDataProto(DataProto, ray.ObjectRef):
-    ...
-    # skip for prototype, assuming dp size kept among all Roles
+def test_single_controller_import():
+    import verl.single_controller
+    print(verl.single_controller.__version__)
