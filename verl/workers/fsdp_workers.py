@@ -35,7 +35,10 @@ from verl.utils.fsdp_utils import offload_fsdp_optimizer, offload_fsdp_param_and
     load_fsdp_param_and_grad
 from verl.utils.import_utils import import_external_libs
 from verl.utils.model import compute_position_id_with_mask
+from verl.utils.flops_counter import FlopsCounter
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
+
+from codetiming import Timer
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv('VERL_PPO_LOGGING_LEVEL', 'WARN'))
@@ -164,7 +167,7 @@ class ActorRolloutRefWorker(Worker):
             actor_module.to(torch_dtype)
 
             if enable_gradient_checkpointing:
-                actor_module.gradient_checkpointing_enable()
+                actor_module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
         torch.distributed.barrier()
 
         if self.rank == 0:
@@ -212,7 +215,8 @@ class ActorRolloutRefWorker(Worker):
             sharding_strategy=sharding_strategy,  # zero3
             mixed_precision=mixed_precision,
             sync_module_states=True,
-            device_mesh=self.device_mesh)
+            device_mesh=self.device_mesh,
+            forward_prefetch=False)
 
         log_gpu_memory_usage('After Actor FSDP init', logger=logger)
 
@@ -340,6 +344,9 @@ class ActorRolloutRefWorker(Worker):
                 self.config.ref.use_remove_padding = use_remove_padding
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
 
+        if self._is_actor:
+            self.flops_counter = FlopsCounter(self.actor_model_config)
+
         torch.cuda.empty_cache()
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
@@ -361,7 +368,13 @@ class ActorRolloutRefWorker(Worker):
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data=data)
             # perform training
-            metrics = self.actor.update_policy(data=data)
+            with Timer(name='update_policy', logger=None) as timer:
+                metrics = self.actor.update_policy(data=data)
+            delta_time = timer.last
+            global_num_tokens = data.meta_info['global_token_num']
+            estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
+            metrics['mfu/actor'] = estimated_flops * self.config.actor.ppo_epochs / promised_flops / self.world_size
+
             self.actor_lr_scheduler.step()
             lr = self.actor_lr_scheduler.get_last_lr()[0]
             metrics['actor/lr'] = lr
@@ -575,9 +588,11 @@ class CriticWorker(Worker):
             critic_module.to(torch_dtype)
 
             if config.model.get('enable_gradient_checkpointing', False):
-                critic_module.gradient_checkpointing_enable()
+                critic_module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
         if self.rank == 0:
             print_model_size(critic_module)
+
+        self.critic_model_config = critic_model_config
 
         fsdp_config = self.config.model.fsdp_config
         mixed_precision_config = fsdp_config.get('mixed_precision', None)
@@ -603,7 +618,8 @@ class CriticWorker(Worker):
                              device_id=torch.cuda.current_device(),
                              sharding_strategy=ShardingStrategy.FULL_SHARD,
                              mixed_precision=mixed_precision,
-                             sync_module_states=True)
+                             sync_module_states=True,
+                             forward_prefetch=False)
 
         log_gpu_memory_usage('After critic FSDP', logger=None)
 
@@ -641,6 +657,9 @@ class CriticWorker(Worker):
         self.critic = DataParallelPPOCritic(config=self.config,
                                             critic_module=self.critic_module,
                                             critic_optimizer=self.critic_optimizer)
+
+        self.flops_counter = FlopsCounter(self.critic_model_config)
+
         torch.cuda.empty_cache()
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
@@ -679,7 +698,14 @@ class CriticWorker(Worker):
         # perform forward computation
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data=data)
-            metrics = self.critic.update_critic(data=data)
+
+            with Timer(name='update_critic', logger=None) as timer:
+                metrics = self.critic.update_critic(data=data)
+            delta_time = timer.last
+
+            global_num_tokens = data.meta_info['global_token_num']
+            estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
+            metrics['mfu/critic'] = estimated_flops * self.config.ppo_epochs / promised_flops / self.world_size
 
             self.critic_lr_scheduler.step()
             lr = self.critic_lr_scheduler.get_last_lr()[0]
@@ -806,7 +832,8 @@ class RewardModelWorker(Worker):
             device_id=torch.cuda.current_device(),
             sharding_strategy=ShardingStrategy.FULL_SHARD,  # zero3
             sync_module_states=True,
-            cpu_offload=CPUOffload(offload_params=self.config.model.fsdp_config.param_offload))
+            cpu_offload=CPUOffload(offload_params=self.config.model.fsdp_config.param_offload),
+            forward_prefetch=False)
 
         return reward_module
 
