@@ -1,0 +1,7 @@
+FROM pvduy/verl:latest
+
+WORKDIR /src
+
+RUN git clone --branch ii_verl_040225 https://github.com/Intelligent-Internet/ii_verl
+
+RUN cd ii_verl && pip install -e .
