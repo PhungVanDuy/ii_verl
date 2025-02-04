@@ -1,0 +1,1 @@
+docker build -t verl -f docker/Dockerfile.custom .
