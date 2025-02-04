@@ -1,0 +1,81 @@
+data:
+  tokenizer: null
+  train_files: phunguyen01/ppo_verl_math
+  val_files: phunguyen01/ppo_verl_math
+  train_split: train
+  val_split: train
+  prompt_key: messages
+  max_prompt_length: 512
+  max_response_length: 1280
+  train_batch_size: 128
+  val_batch_size: 128
+
+actor_rollout_ref:
+  model:
+    path: Qwen/Qwen2.5-0.5B-Instruct
+    enable_gradient_checkpointing: true
+    use_remove_padding: true
+
+  actor:
+    strategy: fsdp
+    ppo_mini_batch_size: 16
+    ppo_micro_batch_size_per_gpu: 4
+
+    use_kl_loss: True # True for GRPO
+    kl_loss_coef: 0.001 # for grpo
+    kl_loss_type: low_var_kl # for grpo
+    
+    optim:
+      lr: 1.0e-06
+      lr_warmup_steps_ratio: 0.  # the total steps will be injected during runtime
+      min_lr_ratio: null   # only useful for warmup with cosine
+      warmup_style: constant  # select from constant/cosine
+      total_training_steps: -1  # must be override by program
+
+  ref:
+    log_prob_micro_batch_size_per_gpu: 4
+    
+  rollout:
+    name: vllm
+    temperature: 1.0
+    gpu_memory_utilization: 0.2
+    tensor_model_parallel_size: 1
+    log_prob_micro_batch_size_per_gpu: 16
+    # number of responses (i.e. num sample times)
+    n: 2 # > 1 for grpo
+
+reward_model:
+  enable: false
+
+reward_api:
+  enable: true
+  api_url: http://localhost:8000/reward
+
+algorithm:
+  gamma: 1.0
+  lam: 1.0
+  adv_estimator: grpo
+  kl_penalty: kl
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.001
+
+trainer:
+  total_epochs: 1
+  project_name: llm-training-platform
+  experiment_name: Qwen2.5-0.5B-Instruct-GRPO
+  nnodes: 1
+  n_gpus_per_node: 1
+  save_freq: -1
+  test_freq: 100000000
+  default_local_dir: checkpoints/Qwen2.5-0.5B-Instruct-GRPO
+  val_before_train: false
+  val_after_train: false
+  hf_hub_model_id: phunguyen01/Qwen2.5-0.5B-Instruct-GRPO
+
+
+# Just ignore this
+# GRPO does not need critic
+# We set the batch size for passing validation
+critic:
+  ppo_micro_batch_size_per_gpu: 1
