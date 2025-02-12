@@ -58,16 +58,17 @@ logger.setLevel(os.getenv('VERL_SFT_LOGGING_LEVEL', 'WARN'))
 
 # Here we use collator padding for speed training
 
-def padding_collator(batch):
+def padding_collator(batch, tokenizer):
     keys = [
         "input_ids",
         "attention_mask",
         "position_ids",
         "loss_mask"
     ]
+    
     max_length = max([len(item['input_ids']) for item in batch]) 
     return_dict_batch = {
-        "input_ids": torch.zeros((len(batch), max_length), dtype=torch.long),
+        "input_ids": torch.zeros((len(batch), max_length), dtype=torch.long) + tokenizer.pad_token_id,
         "attention_mask": torch.zeros((len(batch), max_length), dtype=torch.long),
         "position_ids": torch.zeros((len(batch), max_length), dtype=torch.long),
         "loss_mask": torch.zeros((len(batch), max_length), dtype=torch.long)
@@ -150,7 +151,7 @@ class FSDPSFTTrainerHF(BaseSFTTrainer):
             world_size = self.device_mesh.size()
         if self.device_mesh.get_rank() == 0:
             print(f'Using FSDP rank {rank} and size {world_size} for data distribution')
-
+        from functools import partial
         self.train_sampler = DistributedSampler(self.train_dataset,
                                                 shuffle=True,
                                                 num_replicas=world_size,
@@ -162,7 +163,7 @@ class FSDPSFTTrainerHF(BaseSFTTrainer):
                                            num_workers=8,
                                            pin_memory=True,
                                            drop_last=True,
-                                           collate_fn=padding_collator)
+                                           collate_fn=partial(padding_collator, tokenizer=self.tokenizer))
 
         self.val_sampler = DistributedSampler(self.val_dataset,
                                               shuffle=True,
@@ -175,7 +176,7 @@ class FSDPSFTTrainerHF(BaseSFTTrainer):
                                          num_workers=8,
                                          pin_memory=True,
                                          drop_last=True,
-                                         collate_fn=padding_collator)
+                                         collate_fn=partial(padding_collator, tokenizer=self.tokenizer))
 
 
 from verl.trainer.fsdp_sft_trainer import FSDPSFTTrainer

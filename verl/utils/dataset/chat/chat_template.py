@@ -350,6 +350,7 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
 
             # Handle EOS token
             eos_idx = self.find_first_eos_token(input_ids, start_idx=turn_end_idx)
+            # print(turn, eos_idx, turn_end_idx)
             if abs(eos_idx - turn_end_idx) <= 3:  # Allow for some template padding
                 last_eos_idx = eos_idx
                 if self.train_on_eos == "all" or (
@@ -358,6 +359,7 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
                     labels[eos_idx] = input_ids[eos_idx]
                     LOG.debug(f"EOS token set for training at index {eos_idx}")
             else:
+                # print(f"EOS token missing after turn {turn}. eos_idx: {eos_idx}, turn_end_idx: {turn_end_idx}")
                 LOG.debug(
                     f"EOS token missing after turn {turn}. eos_idx: {eos_idx}, turn_end_idx: {turn_end_idx}"
                 )

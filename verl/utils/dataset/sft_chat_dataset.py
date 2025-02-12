@@ -1,5 +1,5 @@
 from typing import List, Union, Dict
-
+import os
 import pandas as pd
 
 import torch
@@ -71,8 +71,16 @@ class SFTChatDataset(torch.utils.data.Dataset):
             # res = strategy.tokenize_prompt(ds[0])
 
         # after that we tokenizer dataset
+        if train_on_inputs == False:
+            self.dataset = self.dataset.map(strategy.tokenize_prompt, num_proc=os.cpu_count())
+        else:
+            def tokenizer_prompt(sample):
+                messages = sample[field_messages]
+                inputs_sample = tokenizer.apply_chat_template(messages, tokenize=True)
+                return {"input_ids": inputs_sample, "attention_mask": [1] * len(inputs_sample), "labels": inputs_sample}
+            self.dataset = self.dataset.map(tokenizer_prompt, num_proc=os.cpu_count())
 
-        self.dataset = self.dataset.map(strategy.tokenize_prompt)
+            # self.dataset = self.dataset.map(strategy.tokenize_prompt_no_input, num_proc=os.cpu_count())
         sample_0 = self.dataset[0]
         input_ids = sample_0['input_ids']
         print(tokenizer.decode(input_ids))

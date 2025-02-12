@@ -359,7 +359,7 @@ class BaseSFTTrainer(object):
 
         step_loss = torch.tensor(step_loss).cuda()
         torch.distributed.all_reduce(step_loss, op=torch.distributed.ReduceOp.AVG)
-        return {'train/loss': step_loss.detach().item(), 'train/lr(1e-3)': lr * 1e3}
+        return {'train/loss': step_loss.detach().item(), 'train/lr': lr }
 
     def validation_step(self, batch: TensorDict):
         self.fsdp_model.eval()
