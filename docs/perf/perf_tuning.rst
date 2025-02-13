@@ -1,22 +1,26 @@
 Performance Tuning Guide
-=========================
+==============================
 
-In this section, we will discuss how to tune the performance of all the stages in veRL, including:
+Author: `Guangming Sheng <https://github.com/PeterSH6>`_
+
+In this section, we will discuss how to tune the performance of all the stages in verl, including:
 
 1. Rollout generation throughput.
 
-2. Batch size tuning for forward and backward computation
+2. Enable `use_remove_padding=True` for sequence packing (i.e., data packing and remove padding).
 
-3. Enable ``use_dynamic_bsz=True`` for higher throughput.
+3. Batch size tuning for forward and backward computation
 
-4. Utilize Ulysses Sequence Parallel for Long Context Training
+4. Enable ``use_dynamic_bsz=True`` for higher throughput.
 
-5. LigerKernel for SFT performance optimization
+5. Utilize Ulysses Sequence Parallel for Long Context Training
+
+6. LigerKernel for SFT performance optimization
 
 Rollout Generation Tuning
 --------------------------
 
-veRL currently supports two rollout backends: vLLM and TGI (with SGLang support coming soon). 
+verl currently supports two rollout backends: vLLM and TGI (with SGLang support coming soon). 
 
 Below are key factors for tuning vLLM-based rollout. Before tuning, we recommend setting ``actor_rollout_ref.rollout.disable_log_stats=False`` so that rollout statistics are logged.
 
@@ -38,6 +42,24 @@ Below are key factors for tuning vLLM-based rollout. Before tuning, we recommend
 More tuning details such as dealing with Preemption and Chunked-prefill
 can be found in `vLLM official tuning guide <https://docs.vllm.ai/en/latest/performance/optimization.html>`_ 
 
+Enable remove padding (sequence packing)
+-----------------------------------------
+
+Currently, for llama, mistral, gemma1 and qwen based models, users can enable `use_remove_padding=True` to utilize the 
+sequence packing implementation provided by transformers library.
+
+For other models, transformers library may also support it but we haven't tested it yet.
+Users can add the desired model config to the  `test_transformer.py <https://github.com/volcengine/verl/blob/main/tests/model/test_transformer.py#L24>`_ file.
+And test its functionaility by running the following command:
+
+.. code-block:: bash
+
+  pytest -s tests/model/test_transformer.py
+
+If the test passes, you can add your desired model into the model `registry.py <https://github.com/volcengine/verl/blob/main/verl/models/registry.py#L24>`_ file.
+Then, you can enjoy the performance boost of sequence packing
+and welcome to PR your tested model to verl!
+
 
 Batch Size Tuning
 -----------------
@@ -45,7 +67,7 @@ Batch Size Tuning
 To achieve higher throughput in experience preparation (i.e., model fwd) and model update (i.e., actor/critic fwd/bwd), 
 users may need to tune the ``*micro_batch_size_per_gpu`` for different computation.
 
-In veRL, the core principle for setting batch sizes is:
+In verl, the core principle for setting batch sizes is:
 
 - **Algorithmic metrics** (train batch size, PPO mini-batch size) are *global* (from a single-controller perspective), 
   normalized in each worker. See the `normalization code <https://github.com/volcengine/verl/blob/main/verl/workers/fsdp_workers.py#L120-L122>`_.
