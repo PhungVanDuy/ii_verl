@@ -1,5 +1,5 @@
 data:
-  train_batch_size: 256
+  train_batch_size: 128
   micro_batch_size: null # will be deprecated, use micro_batch_size_per_gpu
   micro_batch_size_per_gpu: 4  # this is also val batch size
   train_path: ~/data/gsm8k
@@ -16,6 +16,8 @@ data:
       - "user"
     assistant:
       - "assistant"
+    system:
+      - "system"
   sequence_len: 1024
   balance_dp_token: False
   chat_template: qwen25

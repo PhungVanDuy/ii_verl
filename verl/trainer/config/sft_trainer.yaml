@@ -10,6 +10,9 @@ data:
   truncation: error
   balance_dp_token: False
   chat_template: null
+  use_multiturn: False
+  is_hf_dataset: False
+  messages_key: messages
 model:
   partial_pretrain: ~/models/gemma-1.1-7b-it
   fsdp_config:
@@ -26,7 +29,7 @@ model:
   use_liger: False
 optim:
   lr: 1e-5
-  betas: [0.9, 0.95]
+  betas: [0.9, 0.999]
   weight_decay: 0.01
   warmup_steps_ratio: 0.1
   clip_grad: 1.0
