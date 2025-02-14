@@ -181,11 +181,11 @@ class BaseSFTTrainer(object):
             self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
 
         log_gpu_memory_usage('After model allocation', logger=logger)
-        from transformers.models.qwen2.modeling_qwen2 import Qwen2RotaryEmbedding, Qwen2RMSNorm
+        # from transformers.models.qwen2.modeling_qwen2 import Qwen2RotaryEmbedding, Qwen2RMSNorm
         mixed_precision = MixedPrecision(param_dtype=torch.bfloat16,
                                          reduce_dtype=torch.float32,
-                                         buffer_dtype=torch.float32,
-                                         _module_classes_to_ignore=[Qwen2RotaryEmbedding, torch.nn.LayerNorm, Qwen2RMSNorm])
+                                         buffer_dtype=torch.float32)
+                                        #  _module_classes_to_ignore=[Qwen2RotaryEmbedding, torch.nn.LayerNorm, Qwen2RMSNorm])
 
         auto_wrap_policy = get_fsdp_wrap_policy(self.model,
                                                 config=self.config.model.fsdp_config.wrap_policy,
@@ -197,7 +197,7 @@ class BaseSFTTrainer(object):
             cpu_offload = None
         else:
             cpu_offload = CPUOffload(offload_params=self.config.model.fsdp_config.offload_params)
-
+         
         self.fsdp_model = FSDP(module=self.model,
                                auto_wrap_policy=auto_wrap_policy,
                                param_init_fn=init_fn,
@@ -241,7 +241,7 @@ class BaseSFTTrainer(object):
                                                             num_training_steps=self.total_steps,
                                                             scaled_loss=1.0)
 
-    def _compute_loss_and_backward(self, batch, n_item, do_backward=True, n_micro_batches=None):
+    def _compute_loss_and_backward(self, batch, n_item, do_backward=True):
         """Compute loss with optional sequence parallelism and remove padding features"""
         use_sp = self.use_remove_padding and self.config.ulysses_sequence_parallel_size > 1
 
@@ -323,23 +323,13 @@ class BaseSFTTrainer(object):
                     full_loss = full_loss.reshape(-1)
                     loss_mask = loss_mask.to(full_loss.device)
                     loss = full_loss * loss_mask
-
-                # valid_token_this_rank = torch.sum(loss_mask)
-
-                # if self.config.data.balance_dp_token:
-                #     torch.distributed.all_reduce(valid_token_this_rank)
-                #     dp_size = self.ulysses_device_mesh.size('dp') if use_sp else torch.distributed.get_world_size()
-                # else:
-                #     dp_size = 1
-
-                loss = torch.sum(loss) #/ n_item.to(loss.dtype)
-                loss = loss.mean()
-                # if n_micro_batches is not None:
-                    # loss = loss * n_micro_batches
-
-                if do_backward:
-                    loss.backward()
-                return loss
+                    
+        loss = torch.sum(loss) / n_item.to(loss.dtype) 
+        # we change logic here to make it more stable, loss = loss / total_item 
+        if do_backward:
+            loss.backward()
+        return loss
+            
     def scale_loss(self, scale):
         
         from torch.distributed.fsdp._runtime_utils import _lazy_init
@@ -388,40 +378,24 @@ class BaseSFTTrainer(object):
 
     def training_step(self, batch: TensorDict):
         self.fsdp_model.train()
-
         log_gpu_memory_usage('Before optimizer zero_grad', logger=logger)
-
         self.optimizer.zero_grad()
-
         log_gpu_memory_usage('After optimizer zero_grad', logger=logger)
-
+        # For logging
         lenghts = torch.sum(batch['loss_mask'][:, :-1], -1).float()
         min_length = torch.min(lenghts)
         max_length = torch.max(lenghts)
-        mean_length = torch.mean(lenghts) # we scale by this .
-        # this issue for batch with various lengths: [10, 10000, 20000] -> loss[0] /= (10 + 10000 + 20000) is very small. 
-        # scaled_loss = mean_length
+        mean_length = torch.mean(lenghts) 
         n_item = torch.sum(batch['loss_mask'][:, :-1]).cuda() #/ mean_length.cuda()  
-        scaled_loss = n_item / mean_length.cuda() 
-        # correct_loss = loss / n_item 
-        # the_loss = loss / mean_length.cuda() 
-        # correct_loss = loss / [mean_length.cuda() * [n_item / mean_length.cuda()]]   = the_loss / (n_item / mean_length.cuda()) 
-        # correct_loss = the_loss / scaled_loss, scaled_loss = n_item / mean_length.cuda()  
-        # the_loss = correct_loss * scaled_loss
-        # weight = weight - lr * grad  = weight - lr * grad_correct * scaled_loss 
-
-        # torch.distributed.all_reduce(n_item, op=torch.distributed.ReduceOp.SUM)
         micro_batches = batch.split(self.config.data.micro_batch_size_per_gpu)
-        n_micro_batches = len(micro_batches)
         step_loss = 0
         total_loss = 0
         for micro_batch in micro_batches:
-            loss = self._compute_loss_and_backward(batch=micro_batch, n_item=mean_length.cuda(), do_backward=False)
-            total_loss += loss
-        total_loss = total_loss / n_item
-        total_loss.backward()
+            loss = self._compute_loss_and_backward(batch=micro_batch, n_item=n_item.cuda(), do_backward=True)
+            total_loss+= loss.detach().cpu()
+        step_loss = total_loss.item()
+        # We don't scale step_loss / n_microbatches here.
         grad_norm=self.fsdp_model.clip_grad_norm_(max_norm=self.config.optim.clip_grad)
-
         log_gpu_memory_usage('Before optimizer step', logger=logger)
         
         self.optimizer.step()
@@ -435,7 +409,10 @@ class BaseSFTTrainer(object):
 
         log_gpu_memory_usage('After offload weights', logger=logger)
 
-        step_loss = total_loss.detach()
+        # step_loss = total_loss.detach()
+        step_loss = torch.tensor(step_loss, device='cuda')
+        # sync loss across dp ranks
+        torch.distributed.all_reduce(grad_norm, op=torch.distributed.ReduceOp.AVG)
         torch.distributed.all_reduce(step_loss, op=torch.distributed.ReduceOp.AVG)
         
         return {'train/loss': step_loss.detach().item(), 'train/lr': lr, "gradient_norm": grad_norm.detach().cpu().item(), "min_length": min_length.detach().cpu().item(), "max_length": max_length.detach().cpu().item(), "mean_length": mean_length.detach().cpu().item()}
@@ -443,7 +420,6 @@ class BaseSFTTrainer(object):
     def validation_step(self, batch: TensorDict):
         self.fsdp_model.eval()
         n_item = torch.sum(batch['loss_mask'].cuda())
-        # torch.distributed.all_reduce(n_item, op=torch.distributed.ReduceOp.SUM)
         with torch.no_grad():
             loss = self._compute_loss_and_backward(batch, do_backward=False, n_item=n_item)
             torch.distributed.all_reduce(loss, op=torch.distributed.ReduceOp.AVG)

@@ -67,8 +67,14 @@ def padding_collator(batch, tokenizer):
     ]
     
     max_length = max([len(item['input_ids']) for item in batch]) 
+    pad_token_id = tokenizer.pad_token_id 
+    if pad_token_id is None:
+        pad_token_id = tokenizer.eos_token_id
+    if pad_token_id is None:
+        pad_token_id = 0
+        
     return_dict_batch = {
-        "input_ids": torch.zeros((len(batch), max_length), dtype=torch.long) + tokenizer.pad_token_id,
+        "input_ids": torch.zeros((len(batch), max_length), dtype=torch.long) + pad_token_id,
         "attention_mask": torch.zeros((len(batch), max_length), dtype=torch.long),
         "position_ids": torch.zeros((len(batch), max_length), dtype=torch.long),
         "loss_mask": torch.zeros((len(batch), max_length), dtype=torch.long)
@@ -87,25 +93,6 @@ class FSDPSFTTrainerHF(BaseSFTTrainer):
     def _build_dataloader(self):
 
         config = self.config
-        # build dataset
-        # # first we load train dataset 
-        # path: str,
-        # split: str,
-        # tokenizer: PreTrainedTokenizer,
-
-        # # config for dataset column names   
-
-        # field_messages: str = 'messages',
-        # message_field_role: str = 'role',
-        # message_field_content: str = 'content',
-
-        # # config for training on turn
-        # train_on_inputs: bool = False,
-        # train_on_eos: str = "turn", # all, turn, last, none
-        # roles:  Dict[str, List[str]]=None, # {"user": ["user"], "assistant": ["assistant"]}
-
-        # # config for sequence length
-        # sequence_len: int = 512,
 
         # chat_template:str="qwen25",
         self.train_dataset = SFTChatDataset(
