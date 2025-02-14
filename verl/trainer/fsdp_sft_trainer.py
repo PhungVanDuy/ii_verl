@@ -332,7 +332,7 @@ class BaseSFTTrainer(object):
                 # else:
                 #     dp_size = 1
 
-                loss = torch.sum(loss) / n_item.to(loss.dtype)
+                loss = torch.sum(loss) #/ n_item.to(loss.dtype)
                 loss = loss.mean()
                 # if n_micro_batches is not None:
                     # loss = loss * n_micro_batches
@@ -396,6 +396,8 @@ class BaseSFTTrainer(object):
         log_gpu_memory_usage('After optimizer zero_grad', logger=logger)
 
         lenghts = torch.sum(batch['loss_mask'][:, :-1], -1).float()
+        min_length = torch.min(lenghts)
+        max_length = torch.max(lenghts)
         mean_length = torch.mean(lenghts) # we scale by this .
         # this issue for batch with various lengths: [10, 10000, 20000] -> loss[0] /= (10 + 10000 + 20000) is very small. 
         # scaled_loss = mean_length
@@ -412,15 +414,15 @@ class BaseSFTTrainer(object):
         micro_batches = batch.split(self.config.data.micro_batch_size_per_gpu)
         n_micro_batches = len(micro_batches)
         step_loss = 0
+        total_loss = 0
         for micro_batch in micro_batches:
-            loss = self._compute_loss_and_backward(batch=micro_batch, n_item=mean_length.cuda())
-            step_loss += loss.item() / scaled_loss
-
-        self.scale_loss(scaled_loss)
+            loss = self._compute_loss_and_backward(batch=micro_batch, n_item=mean_length.cuda(), do_backward=False)
+            total_loss += loss
+        total_loss = total_loss / n_item
+        total_loss.backward()
         grad_norm=self.fsdp_model.clip_grad_norm_(max_norm=self.config.optim.clip_grad)
 
         log_gpu_memory_usage('Before optimizer step', logger=logger)
-        # modified gradient here by params_gradient / mean_length
         
         self.optimizer.step()
 
@@ -433,9 +435,10 @@ class BaseSFTTrainer(object):
 
         log_gpu_memory_usage('After offload weights', logger=logger)
 
-        step_loss = torch.tensor(step_loss).cuda()
+        step_loss = total_loss.detach()
         torch.distributed.all_reduce(step_loss, op=torch.distributed.ReduceOp.AVG)
-        return {'train/loss': step_loss.detach().item(), 'train/lr': lr, "gradient_norm": grad_norm.detach().cpu().item()}
+        
+        return {'train/loss': step_loss.detach().item(), 'train/lr': lr, "gradient_norm": grad_norm.detach().cpu().item(), "min_length": min_length.detach().cpu().item(), "max_length": max_length.detach().cpu().item(), "mean_length": mean_length.detach().cpu().item()}
 
     def validation_step(self, batch: TensorDict):
         self.fsdp_model.eval()

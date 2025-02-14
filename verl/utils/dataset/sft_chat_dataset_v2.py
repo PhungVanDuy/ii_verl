@@ -142,7 +142,7 @@ class MultiTurnSFTDataset(Dataset):
         position_ids = compute_position_id_with_mask(attention_mask)
 
         # Zero out position IDs for padding
-        # position_ids = position_ids * attention_mask
+        position_ids = position_ids * attention_mask
 
         return {
             'input_ids': input_ids,
