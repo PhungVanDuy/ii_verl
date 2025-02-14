@@ -234,7 +234,6 @@ class BaseSFTTrainer(object):
     def _compute_loss_and_backward(self, batch, do_backward=True):
         """Compute loss with optional sequence parallelism and remove padding features"""
         use_sp = self.use_remove_padding and self.config.ulysses_sequence_parallel_size > 1
-
         # Move inputs to GPU and prepare loss mask
         input_ids = batch['input_ids'].cuda()
         attention_mask = batch['attention_mask'].cuda()
@@ -251,7 +250,7 @@ class BaseSFTTrainer(object):
                     labels = input_ids[:, 1:].contiguous()
                     output = self.fsdp_model(input_ids=input_ids,
                                              attention_mask=attention_mask,
-                                             position_ids=position_ids,
+                                             #position_ids=position_ids,
                                              use_cache=False)
                     logits = output.logits
 
@@ -322,36 +321,36 @@ class BaseSFTTrainer(object):
                 else:
                     dp_size = 1
 
-                loss = torch.sum(loss) / valid_token_this_rank * dp_size
-
+                # Calculate local loss
+                loss = torch.sum(loss)
+                if dp_size > 1:
+                    loss = loss * dp_size
+                
+                # All-reduce loss across ranks before backward
+                torch.distributed.all_reduce(loss, op=torch.distributed.ReduceOp.SUM)
+                torch.distributed.all_reduce(valid_token_this_rank, op=torch.distributed.ReduceOp.SUM)
                 if do_backward:
                     loss.backward()
-                return loss
+                return loss, valid_token_this_rank
 
     def training_step(self, batch: TensorDict):
         self.fsdp_model.train()
-
-        log_gpu_memory_usage('Before optimizer zero_grad', logger=logger)
-
         self.optimizer.zero_grad()
-
-        log_gpu_memory_usage('After optimizer zero_grad', logger=logger)
 
         micro_batches = batch.split(self.config.data.micro_batch_size_per_gpu)
         n_micro_batches = len(micro_batches)
         step_loss = 0
-        for micro_batch in micro_batches:
-            loss = self._compute_loss_and_backward(batch=micro_batch) / n_micro_batches
+        total_loss = 0
+        for i, micro_batch in enumerate(micro_batches):
+            # Scale loss by 1/n_micro_batches for proper gradient accumulation
+            loss, valid_token_this_rank = self._compute_loss_and_backward(batch=micro_batch, do_backward=False)
+            loss = loss / valid_token_this_rank
+            loss = loss / n_micro_batches
+            loss.backward()
             step_loss += loss.item()
-
+            #total_valid_token += valid_token_this_rank
         self.fsdp_model.clip_grad_norm_(max_norm=self.config.optim.clip_grad)
-
-        log_gpu_memory_usage('Before optimizer step', logger=logger)
-
         self.optimizer.step()
-
-        log_gpu_memory_usage('After optimizer step', logger=logger)
-
         self.lr_scheduler.step()
 
         # reduce loss across dp ranks
@@ -361,7 +360,10 @@ class BaseSFTTrainer(object):
 
         step_loss = torch.tensor(step_loss).cuda()
         torch.distributed.all_reduce(step_loss, op=torch.distributed.ReduceOp.AVG)
-        return {'train/loss': step_loss.detach().item(), 'train/lr': lr }
+        data = {'train/loss': step_loss.detach().item(), 'train/lr': lr }
+        if self.device_mesh.get_rank() == 0:
+            print(data)
+        return data
 
     def validation_step(self, batch: TensorDict):
         self.fsdp_model.eval()
@@ -421,38 +423,6 @@ class BaseSFTTrainer(object):
                     tracking.log(data=metric, step=global_step)
                 global_step += 1
 
-                # for early exit validation
-                if global_step >= self.total_training_steps:
-                    # Perform final validation
-                    val_losses = []
-                    for val_data in self.val_dataloader:
-                        val_data = TensorDict(val_data, batch_size=self.config.data.micro_batch_size_per_gpu).cuda()
-                        val_loss = self.validation_step(val_data)
-                        val_losses.append(val_loss)
-                    if rank == 0:
-                        avg_val_loss = torch.mean(torch.stack(val_losses))
-                        metric = {'val/loss': avg_val_loss.detach().item()}
-                        tracking.log(data=metric, step=global_step)
-                    torch.distributed.barrier()
-
-                    # Save final checkpoint
-                    self.save_checkpoint(step=global_step)
-                    return
-
-            # validation
-            val_losses = []
-            for data in self.val_dataloader:
-                data = TensorDict(data, batch_size=self.config.data.micro_batch_size_per_gpu).cuda()
-                val_loss = self.validation_step(data)
-                val_losses.append(val_loss)
-            if rank == 0:
-                val_loss = torch.mean(torch.stack(val_losses))
-                metric = {'val/loss': val_loss.detach().item()}
-                tracking.log(data=metric, step=global_step)
-            torch.distributed.barrier()
-
-            # save checkpoint
-            self.save_checkpoint(step=global_step)
 
 
 class FSDPSFTTrainer(BaseSFTTrainer):

@@ -40,7 +40,7 @@ class MultiTurnSFTDataset(Dataset):
             for hf_dataset in hf_datasets:
                 
                 self.messages.extend(list(hf_dataset[messages_key])) # read on memory
-
+            self.messages = self.messages[:100000]
         if not isinstance(parquet_files, List):
             parquet_files = [parquet_files]
 
