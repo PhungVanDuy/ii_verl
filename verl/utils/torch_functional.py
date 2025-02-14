@@ -383,6 +383,7 @@ def get_cosine_schedule_with_warmup(
     min_lr_ratio: float = 0.0,
     num_cycles: float = 0.5,
     last_epoch: int = -1,
+    scaled_loss: float = 1.0
 ):
     """
     Create a schedule with a learning rate that decreases following the values of the cosine function between the
@@ -414,7 +415,7 @@ def get_cosine_schedule_with_warmup(
             return float(current_step) / float(max(1, num_warmup_steps))
         progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
         x = math.cos(math.pi * float(num_cycles) * 2.0 * progress)
-        return max(0.0, x * coef + intercept)
+        return max(0.0, x * coef + intercept) / scaled_loss
 
     return LambdaLR(optimizer, lr_lambda, last_epoch)
 
