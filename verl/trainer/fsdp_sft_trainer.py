@@ -324,10 +324,10 @@ class BaseSFTTrainer(object):
                     loss_mask = loss_mask.to(full_loss.device)
                     loss = full_loss * loss_mask
                     
-        loss = torch.sum(loss) / n_item.to(loss.dtype) 
+            loss = torch.sum(loss) / n_item.to(loss.dtype) 
         # we change logic here to make it more stable, loss = loss / total_item 
-        if do_backward:
-            loss.backward()
+            if do_backward:
+                loss.backward()
         return loss
             
     def scale_loss(self, scale):
