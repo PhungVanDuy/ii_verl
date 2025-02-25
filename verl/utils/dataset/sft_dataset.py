@@ -172,3 +172,4 @@ class SFTDataset(Dataset):
             'position_ids': position_ids,
             'loss_mask': loss_mask
         }
+

@@ -22,7 +22,7 @@ def concat_dict_to_str(dict: Dict, step):
     output = [f'step:{step}']
     for k, v in dict.items():
         if isinstance(v, numbers.Number):
-            output.append(f'{k}:{v:.3f}')
+            output.append(f'{k}:{v:.10f}')
     output_str = ' - '.join(output)
     return output_str
 

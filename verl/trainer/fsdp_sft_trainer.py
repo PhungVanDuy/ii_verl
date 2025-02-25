@@ -39,6 +39,8 @@ from flash_attn.bert_padding import pad_input, unpad_input, rearrange, index_fir
 
 from verl.utils.fsdp_utils import get_fsdp_wrap_policy, init_fn, get_init_weight_context_manager
 from verl.utils.dataset import SFTDataset
+from verl.utils.dataset.sft_chat_dataset_v2 import MultiTurnSFTDataset
+
 from verl.utils.fs import copy_local_path_from_hdfs
 from verl.utils.tracking import Tracking
 from verl.utils.ulysses import get_ulysses_sequence_parallel_world_size, set_ulysses_sequence_parallel_group
@@ -75,7 +77,8 @@ def convert_to_regular_types(obj):
     return obj
 
 
-class FSDPSFTTrainer(object):
+
+class BaseSFTTrainer(object):
 
     def __init__(self, config, device_mesh: DeviceMesh, ulysses_device_mesh: DeviceMesh):
         self.config = config
@@ -86,8 +89,9 @@ class FSDPSFTTrainer(object):
         local_model_path = copy_local_path_from_hdfs(src=self.config.model.partial_pretrain, verbose=True)
         from verl.utils import hf_tokenizer
         self.tokenizer = hf_tokenizer(local_model_path, trust_remote_code=self.config.model.trust_remote_code)
-        if self.config.data.chat_template is not None:
-            raise ValueError('Apply Chat template from config is not supported yet.')
+        # if self.config.data.chat_template is not None:
+        # currently already supported
+        #     raise ValueError('Apply Chat template from config is not supported yet.')
 
         # normalize dp size
         self._normalize_config_bsz()
@@ -106,6 +110,7 @@ class FSDPSFTTrainer(object):
         # TODO: add checkpoint manager
         if self.device_mesh.get_rank() == 0:
             print(self.config)
+    
 
     def _normalize_config_bsz(self):
         dp_size = self.device_mesh.size(0) if not self.ulysses_device_mesh else self.ulysses_device_mesh.size(0)
@@ -117,67 +122,9 @@ class FSDPSFTTrainer(object):
         self.config.data.train_batch_size //= dp_size
 
         assert self.config.data.train_batch_size % self.config.data.micro_batch_size_per_gpu == 0
-
     def _build_dataloader(self):
-        config = self.config
-        # build dataset
-        self.train_dataset = SFTDataset(parquet_files=config.data.train_files,
-                                        tokenizer=self.tokenizer,
-                                        prompt_key=config.data.prompt_key,
-                                        prompt_dict_keys=config.data.get('prompt_dict_keys', None),
-                                        response_key=config.data.response_key,
-                                        response_dict_keys=config.data.get('response_dict_keys', None),
-                                        max_length=config.data.max_length,
-                                        truncation=config.data.truncation)
-        self.val_dataset = SFTDataset(parquet_files=config.data.val_files,
-                                      tokenizer=self.tokenizer,
-                                      prompt_key=config.data.prompt_key,
-                                      prompt_dict_keys=config.data.get('prompt_dict_keys', None),
-                                      response_key=config.data.response_key,
-                                      response_dict_keys=config.data.get('response_dict_keys', None),
-                                      max_length=config.data.max_length,
-                                      truncation=config.data.truncation)
-
-        # build dataloader
-        # Use data parallel rank and size instead of global rank and world size
-
-        # If doing SP, we need to use the local rank and size
-        if self.config.ulysses_sequence_parallel_size > 1:
-            rank = self.ulysses_device_mesh.get_local_rank('dp')
-            world_size = self.ulysses_device_mesh.size(0)
-            if self.ulysses_device_mesh.get_rank() == 0:
-                print(f'Using SP rank {rank} and size {world_size} for data distribution')
-                print(f'Each SP rank gets different data, but the same data WITHIN the same rank')
-        else:
-            rank = self.device_mesh.get_rank()
-            world_size = self.device_mesh.size()
-        if self.device_mesh.get_rank() == 0:
-            print(f'Using FSDP rank {rank} and size {world_size} for data distribution')
-
-        self.train_sampler = DistributedSampler(self.train_dataset,
-                                                shuffle=True,
-                                                num_replicas=world_size,
-                                                rank=rank,
-                                                drop_last=True)
-        self.train_dataloader = DataLoader(dataset=self.train_dataset,
-                                           batch_size=config.data.train_batch_size,
-                                           sampler=self.train_sampler,
-                                           num_workers=8,
-                                           pin_memory=True,
-                                           drop_last=True)
-
-        self.val_sampler = DistributedSampler(self.val_dataset,
-                                              shuffle=True,
-                                              num_replicas=world_size,
-                                              rank=rank,
-                                              drop_last=True)
-        self.val_dataloader = DataLoader(dataset=self.val_dataset,
-                                         batch_size=config.data.micro_batch_size_per_gpu,
-                                         sampler=self.val_sampler,
-                                         num_workers=8,
-                                         pin_memory=True,
-                                         drop_last=True)
-
+        pass
+    
     def _build_model_optimizer(self):
         # TODO (zhangchi.usc1992):
         # 1. support pretrain from random weights
@@ -234,10 +181,11 @@ class FSDPSFTTrainer(object):
             self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
 
         log_gpu_memory_usage('After model allocation', logger=logger)
-
+        # from transformers.models.qwen2.modeling_qwen2 import Qwen2RotaryEmbedding, Qwen2RMSNorm
         mixed_precision = MixedPrecision(param_dtype=torch.bfloat16,
                                          reduce_dtype=torch.float32,
                                          buffer_dtype=torch.float32)
+                                        #  _module_classes_to_ignore=[Qwen2RotaryEmbedding, torch.nn.LayerNorm, Qwen2RMSNorm])
 
         auto_wrap_policy = get_fsdp_wrap_policy(self.model,
                                                 config=self.config.model.fsdp_config.wrap_policy,
@@ -249,7 +197,7 @@ class FSDPSFTTrainer(object):
             cpu_offload = None
         else:
             cpu_offload = CPUOffload(offload_params=self.config.model.fsdp_config.offload_params)
-
+         
         self.fsdp_model = FSDP(module=self.model,
                                auto_wrap_policy=auto_wrap_policy,
                                param_init_fn=init_fn,
@@ -262,6 +210,14 @@ class FSDPSFTTrainer(object):
                                use_orig_params=False)
 
         log_gpu_memory_usage('After FSDP wrapping', logger=logger)
+
+        # batch_size = self.config.data.train_batch_size 
+        # micro_batch_size = self.config.data.micro_batch_size_per_gpu 
+        # scale = batch_size / micro_batch_size 
+        # if 'scaled_loss' in self.config:
+        #     scaled_loss = self.config.scaled_loss
+        # else:
+        #     scaled_loss = scale
 
         self.optimizer = optim.AdamW(self.fsdp_model.parameters(),
                                      lr=self.config.optim.lr,
@@ -282,9 +238,10 @@ class FSDPSFTTrainer(object):
 
         self.lr_scheduler = get_cosine_schedule_with_warmup(optimizer=self.optimizer,
                                                             num_warmup_steps=num_warmup_steps,
-                                                            num_training_steps=self.total_steps)
+                                                            num_training_steps=self.total_steps,
+                                                            scaled_loss=1.0)
 
-    def _compute_loss_and_backward(self, batch, do_backward=True):
+    def _compute_loss_and_backward(self, batch, n_item, do_backward=True):
         """Compute loss with optional sequence parallelism and remove padding features"""
         use_sp = self.use_remove_padding and self.config.ulysses_sequence_parallel_size > 1
 
@@ -306,7 +263,7 @@ class FSDPSFTTrainer(object):
                                              attention_mask=attention_mask,
                                              position_ids=position_ids,
                                              use_cache=False)
-                    logits = output.logits
+                    logits = output.logits.float()
 
                     shift_logits = logits[..., :-1, :].contiguous()
                     shift_labels = labels.contiguous()
@@ -351,7 +308,7 @@ class FSDPSFTTrainer(object):
                         use_cache=False)
 
                     # Compute loss locally then aggregate
-                    logits_rmpad = output.logits.squeeze(0)
+                    logits_rmpad = output.logits.squeeze(0).float()
                     input_ids_rmpad_rolled = input_ids_rmpad_rolled.to(logits_rmpad.device)
                     loss = loss_fct(logits_rmpad, input_ids_rmpad_rolled)
                     # Gather and unpad for sequence parallelism
@@ -366,41 +323,81 @@ class FSDPSFTTrainer(object):
                     full_loss = full_loss.reshape(-1)
                     loss_mask = loss_mask.to(full_loss.device)
                     loss = full_loss * loss_mask
+                    
+            loss = torch.sum(loss) / n_item.to(loss.dtype) 
+        # we change logic here to make it more stable, loss = loss / total_item 
+            if do_backward:
+                loss.backward()
+        return loss
+            
+    def scale_loss(self, scale):
+        
+        from torch.distributed.fsdp._runtime_utils import _lazy_init
+        _lazy_init(self.fsdp_model, self.fsdp_model)
+        # if not self.fsdp_model.is_root:
+        #     raise RuntimeError("Only the root process can scale the loss")
+        
+        # because we use fully-shared 
+        sharded_params_set = set()
+        nonsharded_params_set = set()
+        sharded_params = []
+        nonsharded_params = []
+        grads = []
+        for handle in self.fsdp_model._all_handles:
+            if handle.uses_sharded_strategy:
+                target_set = sharded_params_set
+                target_list = sharded_params
+            else:
+                target_set = nonsharded_params_set
+                target_list = nonsharded_params
+            if handle._use_orig_params:
+                for param in handle.flat_param._params:
+                    if param not in target_set:
+                        target_set.add(param)
+                        target_list.append(param)
+                        if param.grad is not None:
+                            grads.append(param.grad)
+            else:
+                if handle.flat_param not in target_set:
+                    target_set.add(handle.flat_param)
+                    target_list.append(handle.flat_param)
+                    if handle.flat_param.grad is not None:
+                        grads.append(handle.flat_param.grad)
+        for param in self.fsdp_model.parameters():
+            not_fsdp_managed = (
+                param not in sharded_params_set and param not in nonsharded_params_set
+            )
+            if not_fsdp_managed:
+                nonsharded_params_set.add(param)
+                nonsharded_params.append(param)
+                if param.grad is not None:
+                    grads.append(param.grad)
+        for grad in grads:
+            grad.div_(scale.to(grad.device, grad.dtype))
 
-                valid_token_this_rank = torch.sum(loss_mask)
-
-                if self.config.data.balance_dp_token:
-                    torch.distributed.all_reduce(valid_token_this_rank)
-                    dp_size = self.ulysses_device_mesh.size('dp') if use_sp else torch.distributed.get_world_size()
-                else:
-                    dp_size = 1
-
-                loss = torch.sum(loss) / valid_token_this_rank * dp_size
-
-                if do_backward:
-                    loss.backward()
-                return loss
 
     def training_step(self, batch: TensorDict):
         self.fsdp_model.train()
-
         log_gpu_memory_usage('Before optimizer zero_grad', logger=logger)
-
         self.optimizer.zero_grad()
-
         log_gpu_memory_usage('After optimizer zero_grad', logger=logger)
-
+        # For logging
+        lenghts = torch.sum(batch['loss_mask'][:, :-1], -1).float()
+        min_length = torch.min(lenghts)
+        max_length = torch.max(lenghts)
+        mean_length = torch.mean(lenghts) 
+        n_item = torch.sum(batch['loss_mask'][:, :-1]).cuda() #/ mean_length.cuda()  
         micro_batches = batch.split(self.config.data.micro_batch_size_per_gpu)
-        n_micro_batches = len(micro_batches)
         step_loss = 0
+        total_loss = 0
         for micro_batch in micro_batches:
-            loss = self._compute_loss_and_backward(batch=micro_batch) / n_micro_batches
-            step_loss += loss.item()
-
-        self.fsdp_model.clip_grad_norm_(max_norm=self.config.optim.clip_grad)
-
+            loss = self._compute_loss_and_backward(batch=micro_batch, n_item=n_item.cuda(), do_backward=True)
+            total_loss+= loss.detach().cpu()
+        step_loss = total_loss.item()
+        # We don't scale step_loss / n_microbatches here.
+        grad_norm=self.fsdp_model.clip_grad_norm_(max_norm=self.config.optim.clip_grad)
         log_gpu_memory_usage('Before optimizer step', logger=logger)
-
+        
         self.optimizer.step()
 
         log_gpu_memory_usage('After optimizer step', logger=logger)
@@ -412,14 +409,19 @@ class FSDPSFTTrainer(object):
 
         log_gpu_memory_usage('After offload weights', logger=logger)
 
-        step_loss = torch.tensor(step_loss).cuda()
+        # step_loss = total_loss.detach()
+        step_loss = torch.tensor(step_loss, device='cuda')
+        # sync loss across dp ranks
+        torch.distributed.all_reduce(grad_norm, op=torch.distributed.ReduceOp.AVG)
         torch.distributed.all_reduce(step_loss, op=torch.distributed.ReduceOp.AVG)
-        return {'train/loss': step_loss.detach().item(), 'train/lr(1e-3)': lr * 1e3}
+        
+        return {'train/loss': step_loss.detach().item(), 'train/lr': lr, "gradient_norm": grad_norm.detach().cpu().item(), "min_length": min_length.detach().cpu().item(), "max_length": max_length.detach().cpu().item(), "mean_length": mean_length.detach().cpu().item()}
 
     def validation_step(self, batch: TensorDict):
         self.fsdp_model.eval()
+        n_item = torch.sum(batch['loss_mask'].cuda())
         with torch.no_grad():
-            loss = self._compute_loss_and_backward(batch, do_backward=False)
+            loss = self._compute_loss_and_backward(batch, do_backward=False, n_item=n_item)
             torch.distributed.all_reduce(loss, op=torch.distributed.ReduceOp.AVG)
         return loss
 
@@ -506,6 +508,91 @@ class FSDPSFTTrainer(object):
 
             # save checkpoint
             self.save_checkpoint(step=global_step)
+
+
+class FSDPSFTTrainer(BaseSFTTrainer):
+
+    def _build_dataloader(self):
+        config = self.config
+        dataset_class = MultiTurnSFTDataset if config.data.get('use_multiturn', False) else SFTDataset
+
+        if dataset_class == MultiTurnSFTDataset:
+            self.train_dataset = dataset_class(
+                parquet_files=config.data.train_files,
+                tokenizer=self.tokenizer,
+                messages_key=config.data.messages_key,
+                max_length=config.data.max_length,
+                truncation=config.data.truncation,
+                is_hf_dataset=config.data.is_hf_dataset,
+                key=config.data.get("key_train", "train")
+            )
+            self.val_dataset = dataset_class(
+                parquet_files=config.data.val_files,
+                tokenizer=self.tokenizer,
+                messages_key=config.data.messages_key,
+                max_length=config.data.max_length,
+                truncation=config.data.truncation,
+                is_hf_dataset=config.data.is_hf_dataset,
+                key=config.data.get("key_val", "test")
+            )
+        else:
+        # build dataset
+            self.train_dataset = SFTDataset(parquet_files=config.data.train_files,
+                                            tokenizer=self.tokenizer,
+                                            prompt_key=config.data.prompt_key,
+                                            prompt_dict_keys=config.data.get('prompt_dict_keys', None),
+                                            response_key=config.data.response_key,
+                                            response_dict_keys=config.data.get('response_dict_keys', None),
+                                            max_length=config.data.max_length,
+                                            truncation=config.data.truncation)
+            self.val_dataset = SFTDataset(parquet_files=config.data.val_files,
+                                        tokenizer=self.tokenizer,
+                                        prompt_key=config.data.prompt_key,
+                                        prompt_dict_keys=config.data.get('prompt_dict_keys', None),
+                                        response_key=config.data.response_key,
+                                        response_dict_keys=config.data.get('response_dict_keys', None),
+                                        max_length=config.data.max_length,
+                                        truncation=config.data.truncation)
+
+        # build dataloader
+        # Use data parallel rank and size instead of global rank and world size
+
+        # If doing SP, we need to use the local rank and size
+        if self.config.ulysses_sequence_parallel_size > 1:
+            rank = self.ulysses_device_mesh.get_local_rank('dp')
+            world_size = self.ulysses_device_mesh.size(0)
+            if self.ulysses_device_mesh.get_rank() == 0:
+                print(f'Using SP rank {rank} and size {world_size} for data distribution')
+                print(f'Each SP rank gets different data, but the same data WITHIN the same rank')
+        else:
+            rank = self.device_mesh.get_rank()
+            world_size = self.device_mesh.size()
+        if self.device_mesh.get_rank() == 0:
+            print(f'Using FSDP rank {rank} and size {world_size} for data distribution')
+
+        self.train_sampler = DistributedSampler(self.train_dataset,
+                                                shuffle=True,
+                                                num_replicas=world_size,
+                                                rank=rank,
+                                                drop_last=True)
+        self.train_dataloader = DataLoader(dataset=self.train_dataset,
+                                           batch_size=config.data.train_batch_size,
+                                           sampler=self.train_sampler,
+                                           num_workers=8,
+                                           pin_memory=True,
+                                           drop_last=True)
+
+        self.val_sampler = DistributedSampler(self.val_dataset,
+                                              shuffle=True,
+                                              num_replicas=world_size,
+                                              rank=rank,
+                                              drop_last=True)
+        self.val_dataloader = DataLoader(dataset=self.val_dataset,
+                                         batch_size=config.data.micro_batch_size_per_gpu,
+                                         sampler=self.val_sampler,
+                                         num_workers=8,
+                                         pin_memory=True,
+                                         drop_last=True)
 
 
 from verl.trainer.fsdp_sft_trainer import FSDPSFTTrainer
