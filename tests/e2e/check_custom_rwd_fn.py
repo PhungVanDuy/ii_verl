@@ -12,20 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
-import os
-import torch
+import argparse
 
 
-def set_basic_config(level):
-    """
-    This function sets the global logging format and level. It will be called when import verl
-    """
-    logging.basicConfig(format='%(levelname)s:%(asctime)s:%(message)s', level=level)
+def check_congratulations_in_file(output_file):
+    with open(output_file, 'r') as f:
+        output = f.read()
+
+    success_message = "Congratulations!!! You have called my_reward_function successfully!!!"
+    assert success_message in output, f'Success message of my_reward_function not found in {output_file}'
+    print("Check passes")
 
 
-def log_to_file(string):
-    print(string)
-    if os.path.isdir('logs'):
-        with open(f'logs/log_{torch.distributed.get_rank()}', 'a+') as f:
-            f.write(string + '\n')
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output_file', required=True, type=str)
+
+    args = parser.parse_args()
+
+    check_congratulations_in_file(args.output_file)
