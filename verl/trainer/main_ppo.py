@@ -144,7 +144,26 @@ def main_task(config):
 
     # Note that we always use function-based RM for validation
     val_reward_fn = reward_manager_cls(tokenizer=tokenizer, num_examine=1, compute_score=compute_score)
-
+        
+    if config.reward_api.enable:
+        from verl.workers.reward_manager import APIRewardManager
+        if not config.reward_api.api_url:
+            raise ValueError('api_url is required when enable reward_api')
+        max_workers = config.reward_api.get('max_workers', 10)
+        timeout = config.reward_api.get('timeout', 30)
+        verification_info_column = config.reward_api.get('verification_info_column', 'verification_info')
+        
+        print("-"*30)
+        print("Using API Reward Manager")
+        print("URL:", config.reward_api.api_url)
+        print("Max Workers:", max_workers)
+        print("Timeout:", timeout)
+        print("Verification Info Column:", verification_info_column)
+        print("-"*30)
+        
+        reward_fn = APIRewardManager(tokenizer=tokenizer, api_url=config.reward_api.api_url, max_workers=max_workers, timeout=timeout, verification_info_column=verification_info_column)
+        val_reward_fn = APIRewardManager(tokenizer=tokenizer, api_url=config.reward_api.api_url, max_workers=max_workers, timeout=timeout, verification_info_column=verification_info_column)
+        
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
     trainer = RayPPOTrainer(config=config,
